@@ -1,0 +1,22 @@
+{
+  "name": "nujob",
+  "version": "1.0.0",
+  "description": "Automated job application tool using Puppeteer and OpenAI",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "puppeteer": "^20.7.3",
+    "openai": "^3.3.0"
+  },
+  "keywords": [
+    "automation",
+    "job-applications",
+    "puppeteer",
+    "openai"
+  ],
+  "author": "",
+  "license": "ISC"
+}

@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { fillGreenhouseApplication, fillGreenhouseApplicationV2 } = require('./services/puppeteerService');
 const formatWithGPT = require('./services/openaiService');
 const resumeData = require('./data/resumeData');

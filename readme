@@ -1,0 +1,16 @@
+## How to Run the Script
+
+To run the automated job application script, follow these steps:
+
+1. Ensure you have Node.js installed on your machine.
+2. Navigate to the project directory in your terminal.
+3. Install the necessary dependencies by running:
+   ```
+   npm install
+   ```
+4. Start the script by running:
+   ```
+   npm start
+   ```
+
+This will execute the script and begin the automated job application process using Puppeteer and OpenAI.

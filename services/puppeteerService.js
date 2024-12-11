@@ -1,102 +1,6 @@
 const puppeteer = require('puppeteer');
 const { autoScrollAndGatherFields } = require('../utils/formUtils');
-const formatWithGPT = require('./openaiService');
-
-// async function fillGreenhouseApplicationV2(jobUrl, resumeData) {
-//   const browser = await puppeteer.launch({ headless: false });
-//   const page = await browser.newPage();
-  
-//   try {
-//     // Navigate to the job application page
-//     await page.goto(jobUrl);
-
-//     // Wait for the form to load
-//     await page.waitForSelector('#application-form');
-
-//     const formFields = await autoScrollAndGatherFields(page);
-
-//     // Use GPT to map resume data to form fields
-//     const mappingPrompt = {
-//       formFields,
-//       resumeData
-//     };
-    
-//     console.log(mappingPrompt, 'mappingPrompt');
-    
-//     const fieldMappings = await formatWithGPT(mappingPrompt);
-
-//     console.log(fieldMappings, 'fieldMappings');
-
-//     // Get all labels and their associated input/select elements
-//     const fields = await page.evaluate(() => {
-//       const labels = Array.from(document.querySelectorAll('label'));
-//       return labels.map(label => {
-//         const forAttr = label.getAttribute('for');
-//         const inputElement = forAttr ? document.getElementById(forAttr) : null;
-
-//         return {
-//           label: label.textContent.trim().toLowerCase(),
-//           for: forAttr,
-//           tagName: inputElement ? inputElement.tagName.toLowerCase() : null,
-//           id: forAttr,
-//           type: inputElement ? inputElement.type : null
-//         };
-//       });
-//     });
-
-//     // Helper function to find the best match from resumeData
-//     const findBestMatch = (label, resumeData) => {
-//       if (label.toLowerCase().includes('first name')) return resumeData.personalInfo.firstName;
-//       if (label.toLowerCase().includes('last name')) return resumeData.personalInfo.lastName;
-//       if (label.toLowerCase().includes('email')) return resumeData.personalInfo.email;
-//       if (label.toLowerCase().includes('phone')) return resumeData.personalInfo.phone;
-//       if (label.toLowerCase().includes('linkedin')) return resumeData.linkedIn;
-//       if (label.toLowerCase().includes('website')) return resumeData.website;
-//       if (label.toLowerCase().includes('why are you interested')) return resumeData.summary;
-//       if (label.toLowerCase().includes('relocate')) return 'Yes'; // Example for dropdown
-//       if (label.toLowerCase().includes('visa sponsorship')) return 'No'; // Example for dropdown
-//       if (label.toLowerCase().includes('tailscale before')) return 'No'; // Example for dropdown
-//       if (label.toLowerCase().includes('resume')) return { type: 'file', file: resumeData.resumeFile };
-//       if (label.toLowerCase().includes('cover letter')) return { type: 'file', file: resumeData.coverLetterFile };
-//       return null;
-//     };
-
-//     // Iterate over fields and fill dynamically
-//     for (const field of fields) {
-//       try {
-//         const value = findBestMatch(field.label, resumeData);
-
-//         if (!value) continue;
-
-//         if (field.tagName === 'input' && field.type !== 'file') {
-//           await page.type(`#${field.id}`, value);
-//         } else if (field.tagName === 'textarea') {
-//           await page.type(`#${field.id}`, value);
-//         } else if (field.tagName === 'select') {
-//           await page.select(`#${field.id}`, value); // Assuming dropdown values match
-//         } else if (field.tagName === 'input' && field.type === 'file') {
-//           const fileInput = await page.$(`#${field.id}`);
-//           if (value.type === 'file') {
-//             await fileInput.uploadFile(value.file);
-//           }
-//         }
-//       } catch (fieldError) {
-//         console.warn(`Error filling field ${field.label}:`, fieldError);
-//       }
-//     }
-
-//     // Take a screenshot for verification
-//     await page.screenshot({ path: 'application-filled.png', fullPage: true });
-
-//     // Submit the form
-//     await page.click('button[type="submit"]');
-
-//   } catch (error) {
-//     console.error('Error filling application:', error);
-//   } finally {
-//     await browser.close();
-//   }
-// }
+const { formatWithGPT, formatWithGPTForCaptcha } = require('./openaiService');
 
 async function fillGreenhouseApplication(jobUrl, resumeData) {
   const browser = await puppeteer.launch({ headless: false });
@@ -250,7 +154,297 @@ async function fillGreenhouseApplicationV2(jobUrl, resumeData) {
   }
 }
 
+async function fillLeverApplication(jobUrl, resumeData) {
+  const browser = await puppeteer.launch({ headless: false });
+  const page = await browser.newPage();
+  try {
+    // Navigate to the job application page
+    await page.goto(jobUrl);
+    
+    // Wait for the application form to load
+    await page.waitForSelector('#application-form');
+
+    // First pass - gather all form fields while scrolling
+    const formFields = await autoScrollAndGatherFields(page);
+
+    console.log(formFields, 'formFields');
+
+    // Use GPT to map resume data to form fields
+    const mappingPrompt = {
+      formFields,
+      resumeData
+    };
+    
+    console.log(mappingPrompt, 'mappingPrompt');
+    
+    const fieldMappings = await formatWithGPT(mappingPrompt);
+    console.log(fieldMappings, 'fieldMappings after gpt');
+    const mappings = JSON.parse(fieldMappings.replace(/^```json|```$/g, ''));
+    console.log(mappings, 'mappings after gpt');
+
+    // Second pass - fill out the form using the AI-generated mappings
+    for (const mapping of Object.values(mappings.formFields)) {
+      // Random delay between 1-3 seconds between fields
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+      
+      try {
+        // Check for h-captcha before each field interaction
+        const hCaptcha = await page.$('#h-captcha');
+        const captchaBounds = await hCaptcha?.boundingBox();
+        const iframes = await hCaptcha?.$$('iframe');
+        const visibleIframe = await Promise.all(
+          (iframes || []).map(async iframe => {
+            const visibility = await iframe.evaluate(el => {
+              const style = window.getComputedStyle(el);
+              return style.visibility === 'visible';
+            });
+            return visibility;
+          })
+        );
+        if (hCaptcha && captchaBounds?.height > 0 && visibleIframe.some(visible => visible)) {
+          // Take screenshot of the captcha
+          // Take screenshot and convert to base64
+          const screenshotBuffer = await hCaptcha.screenshot();
+          await fs.writeFileSync('captcha.png', screenshotBuffer);
+          const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
+          
+          // Send base64 image to GPT for analysis
+          const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
+          
+          // Parse the position to click from GPT response
+          const position = JSON.parse(captchaAnalysis);
+          
+          // Get captcha dimensions
+          const captchaBounds = await hCaptcha.boundingBox();
+          
+          // Click the specified position
+          await page.mouse.click(
+            captchaBounds.x + (position.x * captchaBounds.width),
+            captchaBounds.y + (position.y * captchaBounds.height)
+          );
+          
+          // Wait for captcha to process
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        const { id: selectorId, value, type } = mapping;
+        const selector = `#${selectorId}`;
+
+        if (selectorId === '') {
+          continue;
+        }
+
+        if (type === 'text' || type === 'email' || type === 'tel') {
+          console.log('typing', value);
+          console.log('selector', selector);
+          
+          // Type each character with a random delay
+          const chars = (value || 'no').split('');
+          for (const char of chars) {
+            await page.type(selector, char, {delay: Math.random() * 200 + 50}); // 50-250ms delay between keystrokes
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200)); // Random pause after typing
+          await page.keyboard.press('Tab');
+          
+        } else if (type === 'select-one') {
+          await page.select(selector, value);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+          
+        } else if (type === 'file') {
+          const input = await page.$(selector);
+          if (input) {
+            await input.uploadFile(value);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 1000));
+          }
+          
+        } else if (type === 'checkbox') {
+          await page.hover(selector.replace(/([\[\]])/g, '\\$1')); // Hover first
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+          await page.click(selector.replace(/([\[\]])/g, '\\$1'));
+        }
+      } catch (fieldError) {
+        console.warn(`Error filling field ${mapping.id}:`, fieldError);
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Optional: Take screenshot before submitting
+    const screenshotName = jobUrl.split('/').pop().replace(/\W+/g, '-');
+    await page.screenshot({ path: `application-${screenshotName}.png`, fullPage: true });
+
+    // Submit form with human-like behavior
+    const submitButton = await page.$('button[type="submit"]');
+    if (submitButton) {
+      await page.hover('button[type="submit"]'); // Hover first
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+      await page.click('button[type="submit"]');
+    }
+
+  } catch (error) {
+    console.error('Error filling application:', error);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function fillWorkableApplication(jobUrl, resumeData) {
+  const browser = await puppeteer.launch({ headless: false });
+  const page = await browser.newPage();
+  try {
+    // Navigate to the job application page
+    await page.goto(jobUrl);
+
+    // Wait for and handle cookie consent
+    await page.waitForSelector('[data-ui="cookie-consent-accept"]');
+    const acceptCookiesButton = await page.$('[data-ui="cookie-consent-accept"]');
+    if (acceptCookiesButton) {
+      await page.hover('[data-ui="cookie-consent-accept"]'); // Hover first
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+      await acceptCookiesButton.click();
+    }
+    
+    // Wait for and click the Apply Now button
+    await page.waitForSelector('[data-ui="overview-apply-now"]');
+    const applyButton = await page.$('[data-ui="overview-apply-now"]');
+    if (applyButton) {
+      await page.hover('[data-ui="overview-apply-now"]'); // Hover first
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+      await applyButton.click();
+    }
+
+    // Wait for the application form to load after clicking apply
+    await page.waitForSelector('[data-ui="application-form"]');
+
+    // First pass - gather all form fields while scrolling
+    const formFields = await autoScrollAndGatherFields(page);
+
+    console.log(formFields, 'formFields');
+
+    // Use GPT to map resume data to form fields
+    const mappingPrompt = {
+      formFields,
+      resumeData
+    };
+    
+    console.log(mappingPrompt, 'mappingPrompt');
+    
+    const fieldMappings = await formatWithGPT(mappingPrompt);
+    console.log(fieldMappings, 'fieldMappings after gpt');
+    const mappings = JSON.parse(fieldMappings.replace(/^```json|```$/g, ''));
+    console.log(mappings, 'mappings after gpt');
+
+    // Second pass - fill out the form using the AI-generated mappings
+    for (const mapping of Object.values(mappings.formFields)) {
+      // Random delay between 1-3 seconds between fields
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+      
+      try {
+        // Check for h-captcha before each field interaction
+        const hCaptcha = await page.$('#h-captcha');
+        const captchaBounds = await hCaptcha?.boundingBox();
+        const iframes = await hCaptcha?.$$('iframe');
+        const visibleIframe = await Promise.all(
+          (iframes || []).map(async iframe => {
+            const visibility = await iframe.evaluate(el => {
+              const style = window.getComputedStyle(el);
+              return style.visibility === 'visible';
+            });
+            return visibility;
+          })
+        );
+        if (hCaptcha && captchaBounds?.height > 0 && visibleIframe.some(visible => visible)) {
+          // Take screenshot of the captcha
+          // Take screenshot and convert to base64
+          const screenshotBuffer = await hCaptcha.screenshot();
+          await fs.writeFileSync('captcha.png', screenshotBuffer);
+          const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
+          
+          // Send base64 image to GPT for analysis
+          const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
+          
+          // Parse the position to click from GPT response
+          const position = JSON.parse(captchaAnalysis);
+          
+          // Get captcha dimensions
+          const captchaBounds = await hCaptcha.boundingBox();
+          
+          // Click the specified position
+          await page.mouse.click(
+            captchaBounds.x + (position.x * captchaBounds.width),
+            captchaBounds.y + (position.y * captchaBounds.height)
+          );
+          
+          // Wait for captcha to process
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        const { id: selectorId, value, type } = mapping;
+        const selector = `#${selectorId}`;
+
+        if (selectorId === '') {
+          continue;
+        }
+
+        if (type === 'text' || type === 'email' || type === 'tel') {
+          console.log('typing', value);
+          console.log('selector', selector);
+          
+          // Type each character with a random delay
+          const chars = (value || 'no').split('');
+          for (const char of chars) {
+            await page.type(selector, char, {delay: Math.random() * 200 + 50}); // 50-250ms delay between keystrokes
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200)); // Random pause after typing
+          await page.keyboard.press('Tab');
+          
+        } else if (type === 'select-one') {
+          await page.select(selector, value);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+          
+        } else if (type === 'file') {
+          const input = await page.$(selector);
+          if (input) {
+            await input.uploadFile(value);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 1000));
+          }
+          
+        } else if (type === 'checkbox') {
+          await page.hover(selector.replace(/([\[\]])/g, '\\$1')); // Hover first
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+          await page.click(selector.replace(/([\[\]])/g, '\\$1'));
+        }
+      } catch (fieldError) {
+        console.warn(`Error filling field ${mapping.id}:`, fieldError);
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Optional: Take screenshot before submitting
+    const screenshotName = jobUrl.split('/').pop().replace(/\W+/g, '-');
+    await page.screenshot({ path: `application-${screenshotName}.png`, fullPage: true });
+
+    // Submit form with human-like behavior
+    const submitButton = await page.$('button[type="submit"]');
+    if (submitButton) {
+      await page.hover('button[type="submit"]'); // Hover first
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+      await page.click('button[type="submit"]');
+    }
+
+  } catch (error) {
+    console.error('Error filling application:', error);
+  } finally {
+    await browser.close();
+  }
+}
+
 module.exports = {
   fillGreenhouseApplication,
-  fillGreenhouseApplicationV2
+  fillGreenhouseApplicationV2,
+  fillLeverApplication,
+  fillWorkableApplication
 };

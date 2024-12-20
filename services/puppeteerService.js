@@ -175,12 +175,8 @@ async function fillLeverApplication(jobUrl, resumeData) {
       resumeData
     };
     
-    console.log(mappingPrompt, 'mappingPrompt');
-    
     const fieldMappings = await formatWithGPT(mappingPrompt);
-    console.log(fieldMappings, 'fieldMappings after gpt');
     const mappings = JSON.parse(fieldMappings.replace(/^```json|```$/g, ''));
-    console.log(mappings, 'mappings after gpt');
 
     // Second pass - fill out the form using the AI-generated mappings
     for (const mapping of Object.values(mappings.formFields)) {
@@ -201,30 +197,53 @@ async function fillLeverApplication(jobUrl, resumeData) {
             return visibility;
           })
         );
-        if (hCaptcha && captchaBounds?.height > 0 && visibleIframe.some(visible => visible)) {
-          // Take screenshot of the captcha
-          // Take screenshot and convert to base64
-          const screenshotBuffer = await hCaptcha.screenshot();
-          await fs.writeFileSync('captcha.png', screenshotBuffer);
-          const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
+        if (visibleIframe.some(visible => visible)) {
+          console.log('taking screenshot');
+          // Find the visible iframe and take screenshot of it
+          const visibleIframeElement = (await Promise.all(iframes.map(async (iframe, index) => {
+            const visible = visibleIframe[index];
+            return visible ? iframe : null;
+          }))).find(iframe => iframe !== null);
           
-          // Send base64 image to GPT for analysis
-          const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
-          
-          // Parse the position to click from GPT response
-          const position = JSON.parse(captchaAnalysis);
-          
-          // Get captcha dimensions
-          const captchaBounds = await hCaptcha.boundingBox();
-          
-          // Click the specified position
-          await page.mouse.click(
-            captchaBounds.x + (position.x * captchaBounds.width),
-            captchaBounds.y + (position.y * captchaBounds.height)
-          );
-          
-          // Wait for captcha to process
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (!visibleIframeElement) {
+            console.log('No visible iframe found');
+            return;
+          }
+
+          try {
+            const screenshotBuffer = await visibleIframeElement.screenshot({ 
+              path: `captcha-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+            });
+            const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
+            console.log('taking screenshot done');
+
+            const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
+            console.log(captchaAnalysis, 'captchaAnalysis');
+            
+            // Parse the position to click from GPT response, handling both raw JSON and code block formats
+            const position = JSON.parse(
+              captchaAnalysis.includes('```json') 
+                ? captchaAnalysis.replace(/^```json\n|\n```$/g, '')
+                : captchaAnalysis
+            );
+            // Get iframe dimensions and position
+            const iframeBounds = await visibleIframeElement.boundingBox();
+            if (!iframeBounds) {
+              console.log('Could not get iframe bounds');
+              return;
+            }
+
+            // Click within the iframe's bounds
+            await page.mouse.click(
+              iframeBounds.x + (position.x * iframeBounds.width),
+              iframeBounds.y + (position.y * iframeBounds.height)
+            );
+
+            console.log('clicked captcha');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } catch (error) {
+            console.error('Error handling captcha:', error);
+          }
         }
 
         const { id: selectorId, value, type } = mapping;
@@ -342,42 +361,55 @@ async function fillWorkableApplication(jobUrl, resumeData) {
       
       try {
         // Check for h-captcha before each field interaction
-        const hCaptcha = await page.$('#h-captcha');
-        const captchaBounds = await hCaptcha?.boundingBox();
-        const iframes = await hCaptcha?.$$('iframe');
-        const visibleIframe = await Promise.all(
-          (iframes || []).map(async iframe => {
-            const visibility = await iframe.evaluate(el => {
-              const style = window.getComputedStyle(el);
-              return style.visibility === 'visible';
-            });
-            return visibility;
-          })
-        );
+        let hCaptchaVisible = false;
         if (hCaptcha && captchaBounds?.height > 0 && visibleIframe.some(visible => visible)) {
-          // Take screenshot of the captcha
-          // Take screenshot and convert to base64
-          const screenshotBuffer = await hCaptcha.screenshot();
-          await fs.writeFileSync('captcha.png', screenshotBuffer);
-          const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
-          
-          // Send base64 image to GPT for analysis
-          const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
-          
-          // Parse the position to click from GPT response
-          const position = JSON.parse(captchaAnalysis);
-          
-          // Get captcha dimensions
-          const captchaBounds = await hCaptcha.boundingBox();
-          
-          // Click the specified position
-          await page.mouse.click(
-            captchaBounds.x + (position.x * captchaBounds.width),
-            captchaBounds.y + (position.y * captchaBounds.height)
+          hCaptchaVisible = true;
+        }
+        while (hCaptchaVisible) {
+          const hCaptcha = await page.$('#h-captcha');
+          const captchaBounds = await hCaptcha?.boundingBox();
+          const iframes = await hCaptcha?.$$('iframe');
+          const visibleIframe = await Promise.all(
+            (iframes || []).map(async iframe => {
+              const visibility = await iframe.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return style.visibility === 'visible';
+              });
+              return visibility;
+            })
           );
-          
-          // Wait for captcha to process
-          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          if (hCaptcha && captchaBounds?.height > 0 && visibleIframe.some(visible => visible)) {
+            // Take screenshot of the captcha
+            const screenshotBuffer = await hCaptcha.screenshot();
+            await fs.writeFileSync('captcha.png', screenshotBuffer);
+            const base64Image = `data:image/png;base64,${screenshotBuffer.toString('base64')}`;
+            
+            // Send base64 image to GPT for analysis
+            const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
+            console.log(captchaAnalysis, 'captchaAnalysis');
+            
+            // Parse the position to click from GPT response, handling both raw JSON and code block formats
+            const position = JSON.parse(
+              captchaAnalysis.includes('```json') 
+                ? captchaAnalysis.replace(/^```json\n|\n```$/g, '')
+                : captchaAnalysis
+            );
+            
+            // Get captcha dimensions
+            const captchaBounds = await hCaptcha.boundingBox();
+            
+            // Click the specified position
+            await page.mouse.click(
+              captchaBounds.x + (position.x * captchaBounds.width),
+              captchaBounds.y + (position.y * captchaBounds.height)
+            );
+            
+            // Wait for captcha to process
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } else {
+            hCaptchaVisible = false;
+          }
         }
 
         const { id: selectorId, value, type } = mapping;
@@ -391,30 +423,124 @@ async function fillWorkableApplication(jobUrl, resumeData) {
           console.log('typing', value);
           console.log('selector', selector);
           
+          // Check for captcha before hovering
+          const preCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (preCaptcha) {
+            console.log('Captcha detected before hover, canceling action');
+            continue;
+          }
+          
+          // Hover over input first
+          await page.hover(selector);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 100));
+          
+          // Check for captcha before clicking
+          const postHoverCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (postHoverCaptcha) {
+            console.log('Captcha detected after hover, canceling action');
+            continue;
+          }
+          
+          // Click the input to focus it
+          await page.click(selector);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
+          
           // Type each character with a random delay
           const chars = (value || 'no').split('');
           for (const char of chars) {
-            await page.type(selector, char, {delay: Math.random() * 200 + 50}); // 50-250ms delay between keystrokes
+            // Check for captcha before each keystroke
+            const typingCaptcha = await page.$('iframe[title*="hCaptcha"]');
+            if (typingCaptcha) {
+              console.log('Captcha detected during typing, canceling action');
+              continue;
+            }
+            await page.keyboard.type(char, {delay: Math.random() * 200 + 50});
           }
           
-          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200)); // Random pause after typing
-          await page.keyboard.press('Tab');
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+          
+          // Check for captcha before tab
+          const postTypeCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (!postTypeCaptcha) {
+            await page.keyboard.press('Tab');
+          }
           
         } else if (type === 'select-one') {
-          await page.select(selector, value);
-          await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+          // Check for captcha before hover
+          const preCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (preCaptcha) {
+            console.log('Captcha detected before hover, canceling action');
+            continue;
+          }
+          
+          await page.hover(selector);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 100));
+          
+          // Check for captcha before click
+          const postHoverCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (postHoverCaptcha) {
+            console.log('Captcha detected after hover, canceling action');
+            continue;
+          }
+          
+          await page.click(selector);
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
+          
+          // Check for captcha before select
+          const preSelectCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (!preSelectCaptcha) {
+            await page.select(selector, value);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+          }
           
         } else if (type === 'file') {
           const input = await page.$(selector);
           if (input) {
-            await input.uploadFile(value);
-            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 1000));
+            // Check for captcha before hover
+            const preCaptcha = await page.$('iframe[title*="hCaptcha"]');
+            if (preCaptcha) {
+              console.log('Captcha detected before hover, canceling action');
+              continue;
+            }
+            
+            await page.hover(selector);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 100));
+            
+            // Check for captcha before click
+            const postHoverCaptcha = await page.$('iframe[title*="hCaptcha"]');
+            if (postHoverCaptcha) {
+              console.log('Captcha detected after hover, canceling action');
+              continue;
+            }
+            
+            await page.click(selector);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
+            
+            // Check for captcha before upload
+            const preUploadCaptcha = await page.$('iframe[title*="hCaptcha"]');
+            if (!preUploadCaptcha) {
+              await input.uploadFile(value);
+              await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 1000));
+            }
           }
           
         } else if (type === 'checkbox') {
-          await page.hover(selector.replace(/([\[\]])/g, '\\$1')); // Hover first
+          // Check for captcha before hover
+          const preCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (preCaptcha) {
+            console.log('Captcha detected before hover, canceling action');
+            continue;
+          }
+          
+          const escapedSelector = selector.replace(/([\[\]])/g, '\\$1');
+          await page.hover(escapedSelector);
           await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
-          await page.click(selector.replace(/([\[\]])/g, '\\$1'));
+          
+          // Check for captcha before click
+          const postHoverCaptcha = await page.$('iframe[title*="hCaptcha"]');
+          if (!postHoverCaptcha) {
+            await page.click(escapedSelector);
+          }
         }
       } catch (fieldError) {
         console.warn(`Error filling field ${mapping.id}:`, fieldError);

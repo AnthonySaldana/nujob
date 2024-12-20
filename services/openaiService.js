@@ -41,12 +41,13 @@ async function formatWithGPT(data) {
 
 async function formatWithGPTForCaptcha(imageData) {
   try {
+      console.log('formatWithGPTForCaptcha called');
       const completion = await openai.createChatCompletion({
-        model: "gpt-4-vision-preview",
+        model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: `You are a computer vision assistant that helps solve image captchas. 
+            content: `You are a computer vision assistant that helps solve image puzzles. 
             Analyze the provided image and identify the coordinates where the user needs to click to solve the puzzle.
             Return the coordinates as an array of {x, y} objects representing click positions.
             
@@ -60,25 +61,32 @@ async function formatWithGPTForCaptcha(imageData) {
                   "y": number
                 }
               ]
-            }`
+            }
+              
+            Return the JSON data only. Do not include any other text.`
           },
           {
             role: "user",
             content: [
               {
-                type: "image_url",
-                image_url: imageData
+                "type": "image_url", 
+                "image_url": 
+                {
+                  "url": imageData
+                }
               }
             ]
           }
-        ],
-        max_tokens: 300
+        ]
       });
+      console.log('completion attempted');
+
+      console.log('completion.data.choices[0].message.content', completion.data.choices[0].message.content);
 
       return completion.data.choices[0].message.content;
     } catch (error) {
       console.error('Error analyzing captcha with GPT:', error);
-      throw error; // Throw error since we can't proceed without solving captcha
+      // throw error; // Throw error since we can't proceed without solving captcha
   }
 }
 

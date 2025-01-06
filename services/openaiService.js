@@ -13,7 +13,7 @@ async function formatWithGPT(data) {
               Maintain the original data structure with id, type, and value. Return data in JSON format, focusing only on required fields.
               Fill required fields with placeholders if necessary. For fields with shared ids, return the most relevant one based on labels.
               
-              Return only the JSON data. Do not include any other text. Return in the format:
+              Return only the JSON data. Do not include any other text. Be sure to return valid selectors for the fields. Return in the format:
               
               {
                 formFields: [

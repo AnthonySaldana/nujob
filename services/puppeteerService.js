@@ -155,12 +155,47 @@ async function fillGreenhouseApplicationV2(jobUrl, resumeData) {
 }
 
 async function fillLeverApplication(jobUrl, resumeData) {
-  const browser = await puppeteer.launch({ headless: false });
+  const browser = await puppeteer.launch({ 
+    headless: false,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1920,1080'
+    ]
+  });
   const page = await browser.newPage();
+
+  // Mask automation
+  await page.evaluateOnNewDocument(() => {
+    // Overwrite the 'navigator.webdriver' property to make it undefined
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined
+    });
+
+    // Add missing chrome properties
+    window.chrome = {
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+      app: {}
+    };
+  });
+
+  // Set a more realistic user agent
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
   try {
+    // Add random initial delay
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000 + 1000));
+
     // Navigate to the job application page
-    await page.goto(jobUrl);
+    await page.goto(jobUrl, {
+      waitUntil: 'networkidle0',
+      timeout: 30000
+    });
     
+    // Add random delay before interacting with form
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+
     // Wait for the application form to load
     await page.waitForSelector('#application-form');
 
@@ -178,16 +213,30 @@ async function fillLeverApplication(jobUrl, resumeData) {
     const fieldMappings = await formatWithGPT(mappingPrompt);
     const mappings = JSON.parse(fieldMappings.replace(/^```json|```$/g, ''));
 
+    // Add random mouse movements between interactions
+    async function moveMouseRandomly() {
+      const viewportSize = await page.viewport();
+      const x = Math.floor(Math.random() * viewportSize.width);
+      const y = Math.floor(Math.random() * viewportSize.height);
+      await page.mouse.move(x, y, { steps: 10 });
+    }
+
+    console.log(mappings.formFields, 'mappings.formFields here just going now');
+
     // Second pass - fill out the form using the AI-generated mappings
     for (const mapping of Object.values(mappings.formFields)) {
-      // Random delay between 1-3 seconds between fields
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+      // Add random mouse movement
+      await moveMouseRandomly();
+      
+      // Random delay between 2-5 seconds between fields
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 3000 + 2000));
       
       try {
         // Check for h-captcha before each field interaction
         const hCaptcha = await page.$('#h-captcha');
         const captchaBounds = await hCaptcha?.boundingBox();
         const iframes = await hCaptcha?.$$('iframe');
+        console.log(iframes, 'iframes here just going now');
         const visibleIframe = await Promise.all(
           (iframes || []).map(async iframe => {
             const visibility = await iframe.evaluate(el => {
@@ -197,6 +246,7 @@ async function fillLeverApplication(jobUrl, resumeData) {
             return visibility;
           })
         );
+        console.log(visibleIframe, 'visibleIframe here just going now');
         if (visibleIframe.some(visible => visible)) {
           console.log('taking screenshot');
           // Find the visible iframe and take screenshot of it
@@ -220,27 +270,35 @@ async function fillLeverApplication(jobUrl, resumeData) {
             const captchaAnalysis = await formatWithGPTForCaptcha(base64Image);
             console.log(captchaAnalysis, 'captchaAnalysis');
             
-            // Parse the position to click from GPT response, handling both raw JSON and code block formats
+            // Parse the position to click from GPT response
             const position = JSON.parse(
               captchaAnalysis.includes('```json') 
                 ? captchaAnalysis.replace(/^```json\n|\n```$/g, '')
                 : captchaAnalysis
             );
-            // Get iframe dimensions and position
+            
             const iframeBounds = await visibleIframeElement.boundingBox();
             if (!iframeBounds) {
               console.log('Could not get iframe bounds');
               return;
             }
 
-            // Click within the iframe's bounds
+            // Add human-like movement before clicking captcha
+            await page.mouse.move(
+              iframeBounds.x + (position.x * iframeBounds.width),
+              iframeBounds.y + (position.y * iframeBounds.height),
+              { steps: 25 }
+            );
+            
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
+            
             await page.mouse.click(
               iframeBounds.x + (position.x * iframeBounds.width),
               iframeBounds.y + (position.y * iframeBounds.height)
             );
 
             console.log('clicked captcha');
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(resolve => setTimeout(resolve, 3000));
           } catch (error) {
             console.error('Error handling captcha:', error);
           }
@@ -253,17 +311,35 @@ async function fillLeverApplication(jobUrl, resumeData) {
           continue;
         }
 
+        console.log(selector, 'selector here just going now');
+
+        // Add mouse movement to field before interaction
+        const element = await page.$(selector);
+        if (element) {
+          const box = await element.boundingBox();
+          if (box) {
+            await page.mouse.move(
+              box.x + box.width / 2,
+              box.y + box.height / 2,
+              { steps: 15 }
+            );
+          }
+        }
+
         if (type === 'text' || type === 'email' || type === 'tel') {
           console.log('typing', value);
           console.log('selector', selector);
           
-          // Type each character with a random delay
+          await page.click(selector, { clickCount: 3 }); // Select all existing text
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 100));
+          
+          // Type each character with variable delay
           const chars = (value || 'no').split('');
           for (const char of chars) {
-            await page.type(selector, char, {delay: Math.random() * 200 + 50}); // 50-250ms delay between keystrokes
+            await page.keyboard.type(char, {delay: Math.random() * 150 + 30}); // 30-180ms delay
           }
           
-          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200)); // Random pause after typing
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
           await page.keyboard.press('Tab');
           
         } else if (type === 'select-one') {
@@ -278,7 +354,7 @@ async function fillLeverApplication(jobUrl, resumeData) {
           }
           
         } else if (type === 'checkbox') {
-          await page.hover(selector.replace(/([\[\]])/g, '\\$1')); // Hover first
+          await page.hover(selector.replace(/([\[\]])/g, '\\$1'));
           await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
           await page.click(selector.replace(/([\[\]])/g, '\\$1'));
         }
@@ -287,7 +363,7 @@ async function fillLeverApplication(jobUrl, resumeData) {
       }
     }
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
 
     // Optional: Take screenshot before submitting
     const screenshotName = jobUrl.split('/').pop().replace(/\W+/g, '-');
@@ -296,7 +372,7 @@ async function fillLeverApplication(jobUrl, resumeData) {
     // Submit form with human-like behavior
     const submitButton = await page.$('button[type="submit"]');
     if (submitButton) {
-      await page.hover('button[type="submit"]'); // Hover first
+      await page.hover('button[type="submit"]');
       await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 500));
       await page.click('button[type="submit"]');
     }
